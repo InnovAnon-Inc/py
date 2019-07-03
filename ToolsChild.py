@@ -1,6 +1,7 @@
 from abc             import ABC
 from abc             import abstractmethod
 
+from shutil         import move
 from traceback      import format_exc
 from multiprocessing import cpu_count
 from threading       import Thread
@@ -14,7 +15,12 @@ from os              import mkdir
 from os              import remove
 from os              import rmdir
 from os              import sep
+from os             import listdir
+from os             import unlink
+from os             import umask
 from os              import symlink
+from sys               import stdout
+from subprocess     import check_output
 from subprocess      import DEVNULL
 from os.path         import dirname
 from os.path         import exists
@@ -30,6 +36,7 @@ from shutil          import rmtree
 from subprocess      import check_call
 from tempfile        import mkdtemp
 from tarfile         import open as topen
+from re             import sub
 
 from chmod_util       import chmod_a_plus_wt
 from disk_util        import toBytes
@@ -65,9 +72,12 @@ class ToolsChild(LFSAbs):
 
     def buildDistro(self):
         print("build distro")
-        self.setupEnvironment()
-        self.aboutSBUs()
-        self.constructTemporarySystem()
+        # TODO
+        try:
+            self.setupEnvironment()
+            self.aboutSBUs()
+            self.constructTemporarySystem()
+        except: print(format_exc())
     """ II 4.4 """
     def setupEnvironment(self):
         print("setup environment")
@@ -92,8 +102,14 @@ class ToolsChild(LFSAbs):
 
         """ https://stackoverflow.com/questions/8365394/set-environment-variable-in-python-script#8365493 """
         term = os.environ['TERM']
-        os.environ = { 'HOME' : home, 'TERM' : term, 'PS1' : """\\u:\\w\\$ """}
+        os.environ = { 'HOME' : home, 'TERM' : term, 'PS1' : """\\u:\\w\\$ """,
+                        'LFS' : self.lfs,
+                        'LC_ALL' : 'POSIX',
+                        'LFS_TGT' : '%s-lfs-linux-gnu' % uname()[4],
+                        'PATH' : ':'.join([join(self.toolsym, 'bin'), join(sep, 'bin'), join(sep, 'usr', 'bin')])}
         
+        umask(0o22)
+
         #copyfile('.bash_profile', expanduser("~/.bash_profile"))
         #copyfile('.bashrc',       expanduser("~/.bashrc"))
         # TODO lfs handbook really wants us to exec env (the latter also does an exec)
@@ -107,55 +123,61 @@ class ToolsChild(LFSAbs):
     """ II 5 """
     def constructTemporarySystem(self):
         print("construct temporary system")
-        self.compileBinutils1()
-        self.compileGcc1()
-        self.compileLinuxHeaders()
+        #self.compileBinutils1()
+        #self.compileGcc1()
+        #self.compileLinuxHeaders()
         self.compileGlibc()
-        self.compileLibstdcpp()
-        self.compileBinutils2()
-        self.compileGcc2()
-        self.compileTcl()
-        self.compileExpect()
-        self.compileDejaGnu()
-        self.compileM4()
-        self.compileNcurses()
-        self.compileBash()
-        self.compileBison()
-        self.compileBzip2()
-        self.compileCoreutils()
-        self.compileDiffutils()
-        self.compileFile()
-        self.compileFindutils()
-        self.compileGawk()
-        self.compileGettext()
-        self.compileGrep()
-        self.compileGzip()
-        self.compileMake()
-        self.compilePatch()
-        self.compilePerl()
-        self.compilePython()
-        self.compileSed()
-        self.compileTar()
-        self.compileTexinfo()
-        self.compileXz()
-        self.strip()
-        self.changeOwnership()
+        #self.compileLibstdcpp()
+        #self.compileBinutils2()
+        #self.compileGcc2()
+        #self.compileTcl()
+        #self.compileExpect()
+        #self.compileDejaGnu()
+        #self.compileM4()
+        #self.compileNcurses()
+        #self.compileBash()
+        #self.compileBison()
+        #self.compileBzip2()
+        #self.compileCoreutils()
+        #self.compileDiffutils()
+        #self.compileFile()
+        #self.compileFindutils()
+        #self.compileGawk()
+        #self.compileGettext()
+        #self.compileGrep()
+        #self.compileGzip()
+        #self.compileMake()
+        #self.compilePatch()
+        #self.compilePerl()
+        #self.compilePython()
+        #self.compileSed()
+        #self.compileTar()
+        #self.compileTexinfo()
+        #self.compileXz()
+        #self.strip()
+        #self.changeOwnership()
 
     """ II 5.3 """
-    def compilePackage(self, name, version, fmt, s, arc, build):
+    def compilePackage(self, name, version, fmt, s, arc, is_separate_builddir, build):
         print("lfs compile package")
 
         #pkgd    = '%s-%s' % (name, version)
         #pkg     = '%s.%s' % (pkgd, fmt)
         #arc     = join(self.sources, pkg)
         #s       = join(self.srcx, pkgd)
-        d       = mkdtemp(dir=self.srcx)
+        if is_separate_builddir:
+            #d       = mkdtemp(dir=self.srcx)
+            d = join(s, 'build')
+        else:
+            d       = s
 
         #with tarfile.open(pkg, 'r') as tar: tar.extractall(self.srcx)
         #s = mkdtemp(dir=self.srcx)
         #print("made temp source dir: %s" % s)
         try:
             with topen(arc, 'r') as tar: tar.extractall(self.srcx)
+            if is_separate_builddir:
+                mkdir(d)
 
             #d = join(self.srcx, 'build')
             #mkdir(d)
@@ -163,37 +185,61 @@ class ToolsChild(LFSAbs):
             #chdir(d)
 
             build(d)
+        #except: copyfile(join(d, 'config.log'), stdout)
         finally:
             #chdir(self.srcx)
-            rmtree(d)
+            if is_separate_builddir:
+                rmtree(d)
             rmtree(s)
-    def buildHelper(self, s, d, preconf, configure, preinstall):
+    def buildHelper(self, s, d, preconf, configure, preinstall, postinstall):
         print("build helper")
         preconf(d)
-        check_call([join(s, 'configure')] + configure, cwd=d)
+        check_call([join(s, 'configure')] + configure(d), cwd=d)
         check_call(['make'], cwd=d)
         preinstall(d)
-        check_call(['make', 'install'], cwd=d)        
-       
+        check_call(['make', 'install'], cwd=d)
+        postinstall(d)
 
     def compileBinutils1(self):
         print("compile binutils (pass 1)")
-        try:
-            print("calling compile binutils 1 constructor")
-            c = CompileBinutils1(self)
-            print("finna compile binutils package")
-            c.compilePackage()
-            print("compiled binutils package")
-        except:
-            format_exc()
-            raise Exception()
+        #try:
+        print("calling compile binutils 1 constructor")
+        c = CompileBinutils1(self)
+        print("finna compile binutils package")
+        c.compilePackage()
+        print("compiled binutils package")
+        #except: print(format_exc())
+            #raise Exception()
     def compileGcc1(self):
         print("compile gcc (pass 1)")
         c = CompileGcc1(self)
         c.compilePackage()
+    def compileLinuxHeaders(self):
+        c = CompileLinuxHeaders(self)
+        c.compilePackage()
+    def compileGlibc(self):
+        c = CompileGlibc(self)
+        c.compilePackage()
+    def compileLibstdcpp(self):
+        c = CompileLibstdcpp(self)
+        c.compilePackage()
+    def compileBinutils2(self):
+        c = CompileBinutils2(self)
+        c.compilePackage()
+
+
+
+
+
+
+
+
+
 
 class Compile(ABC):
-    def __init__(self, name, version, fmt, lfs):
+    def __init__(self, name, version, fmt, lfs, is_separate_builddir):
+        print("in compile constructor")
+        stdout.flush()
         self.name    = name
         self.version = version
         self.fmt     = fmt
@@ -203,20 +249,27 @@ class Compile(ABC):
         self.pkg     = '%s.%s' % (self.pkgd, fmt)
         self.arc     = join(lfs.sources, self.pkg)
         self.s       = join(lfs.srcx, self.pkgd)
-    @abstractmethod
+
+        self.is_separate_builddir = is_separate_builddir
+    #@abstractmethod
     def preconf(self, d): print("preconf")
-    @abstractmethod
+    #@abstractmethod
     def preinstall(self, d): print("preinstall")
+    #@abstractmethod
+    def postinstall(self, d): print("postinstall")
     def compilePackage(self):
         print("my compile package")
-        try:
-            self.lfs.compilePackage(self.name, self.version, self.fmt,
-                self.s, self.arc,
-                lambda d: self.lfs.buildHelper(self.s, d,
-                    self.preconf,
-                    self.configure,
-                    self.preinstall))
-        except: format_exc()
+        #try:
+        self.lfs.compilePackage(self.name, self.version, self.fmt,
+            self.s, self.arc, self.is_separate_builddir,
+            lambda d: self.lfs.buildHelper(self.s, d,
+                self.preconf,
+                self.configure,
+                self.preinstall,
+                self.postinstall))
+        #except:
+        #    # TODO
+        #    print(format_exc())
 class CompileBinutils1(Compile):
     #name    = 'binutils'
     #version = '2.32'
@@ -224,9 +277,10 @@ class CompileBinutils1(Compile):
     #def __init__(self, lfs): self.lfs = lfs
     def __init__(self, lfs):
         print("init compile binutils 1")
-        super().__init__('binutils', '2.32', 'tar.xz', lfs)
+        stdout.flush()
+        super().__init__('binutils', '2.32', 'tar.xz', lfs, True)
         print("called super constructor")
-        self.configure = ['--prefix=%s' % lfs.toolsym, '--with-sysroot=%s' % lfs.lfs, '--with-lib-path=%s' % join(lfs.toolsym, 'lib'), '--target=%s' % lfs.lfs_tgt, '--disable-nls', '--disable-werror']
+        self.configure = lambda d: ['--prefix=%s' % lfs.toolsym, '--with-sysroot=%s' % lfs.lfs, '--with-lib-path=%s' % join(lfs.toolsym, 'lib'), '--target=%s' % lfs.lfs_tgt, '--disable-nls', '--disable-werror']
         print("leaving constructor")
     def preinstall(self, d):
         print("preinstall")
@@ -241,25 +295,52 @@ class CompileBinutils1(Compile):
     #            self.preconf,
     #            ['--prefix=%s' % self.lfs.toolsym, '--with-sysroot=%s' % self.lfs.lfs, '--with-lib-path=%s' % join(self.lfs.toolsym, 'lib'), '--target=%s' % self.lfs.lfs_tgt, '--disable-nls', '--disable-werror'],
     #            self.preinstall))
+class CompileMPFR(Compile):
+    def __init__(self, lfs):
+        super().__init__('mpfr', '4.0.2', 'tar.xz', lfs, True)
+class CompileGMP(Compile):
+    def __init__(self, lfs):
+        super().__init__('gmp', '6.1.2', 'tar.xz', lfs, True)
+class CompileMPC(Compile):
+    def __init__(self, lfs):
+        super().__init__('mpc', '1.1.0', 'tar.gz', lfs, True)
 class CompileGcc1(Compile):
     def __init__(self, lfs):
-        super().__init__('gcc', '9.1.0', 'tar.xz', lfs)
-        # TODO
-        self.configure = []
-    def preconf(self, s, d):
+        super().__init__('gcc', '9.1.0', 'tar.xz', lfs, True)
+        self.configure = lambda d: [
+            '--target=%s' % self.lfs.lfs_tgt,
+            '--prefix=%s' % self.lfs.toolsym,
+            '--with-glibc-version=2.11',
+            '--with-newlib',
+            '--without-headers',
+            '--with-local-prefix=%s' % self.lfs.toolsym,
+            '--with-native-system-header-dir=%s' % join(self.lfs.toolsym, 'include'),
+            '--disable-nls',
+            '--disable-shared',
+            '--disable-multilib',
+            '--disable-decimal-float',
+            '--disable-threads',
+            '--disable-libatomic',
+            '--disable-libgomp',
+            '--disable-libquadmath',
+            '--disable-libssp',
+            '--disable-libvtv',
+            '--disable-libstdcxx',
+            '--enable-languages=c,c++']
+    def preconf(self, d):
         print("preconf")
         mpfr = CompileMPFR(self.lfs)
         mpc  = CompileMPC(self.lfs)
         gmp  = CompileGMP(self.lfs)
         # TODO parallel
-        with topen(mpfr.arc, 'r') as tar: tar.extractall(s)
-        mv(mpfr.s, 'mpfr')
-        with topen(mpc.arc,  'r') as tar: tar.extractall(s)
-        mv(mpc.s,  'mpc')
-        with topen(gmp.arc,  'r') as tar: tar.extractall(s)
-        mv(gmp.s,  'gmp')
+        with topen(mpfr.arc, 'r') as tar: tar.extractall(self.s)
+        move(join(self.s, mpfr.pkgd), join(self.s, 'mpfr'))
+        with topen(mpc.arc,  'r') as tar: tar.extractall(self.s)
+        move(join(self.s, mpc.pkgd),  join(self.s, 'mpc'))
+        with topen(gmp.arc,  'r') as tar: tar.extractall(self.s)
+        move(join(self.s, gmp.pkgd),  join(self.s, 'gmp'))
 
-        for file in map(lambda s: 'gcc/config/%slinux%s.h' % s, [('', ''),('i386/', ''),('i386/', '64')]):
+        for file in map(lambda s: join(self.s, 'gcc/config/%slinux%s.h' % s), [('', ''),('i386/', ''),('i386/', '64')]):
             with open(file, 'r') as f: r = f.read()
             r = sub('/lib\(64\)\?\(32\)\?/ld', '/tools&', r)
             r = r.replace('/usr', '/tools')
@@ -270,15 +351,101 @@ class CompileGcc1(Compile):
             with open(file, 'w') as f: f.write(r)
             
         if uname()[4] in 'x86_64':
-            with open('gcc/config/i386/t-linux64', 'r') as f: r = f.readlines()
+            with open(join(self.s, 'gcc/config/i386/t-linux64'), 'r') as f: r = f.readlines()
             r = [l.replace('lib64', 'lib') if 'm64=' in l else l for l in r]
-            with open('gcc/config/i386/t-linux64', 'w') as f: f.writelines(r)
-class CompileMPFR(Compile):
+            with open(join(self.s, 'gcc/config/i386/t-linux64'), 'w') as f: f.writelines(r)
+class CompileLinuxHeaders(Compile):
     def __init__(self, lfs):
-        super().__init__('mpfr', '4.0.2', 'tar.xz', lfs)
-class CompileGMP(Compile):
+        super().__init__('linux', '5.1.15', 'tar.xz', lfs, False)
+        def configure(d): pass
+        self.configure = configure
+    def compilePackage(self):
+        print("my compile package")
+        def buildHelper(d):
+            check_call(['make', 'mrproper'], cwd=d)
+            check_call(['make', 'INSTALL_HDR_PATH=dest', 'headers_install'], cwd=d)
+            for f in listdir(join(d, 'dest', 'include')):
+                move(join(d, 'dest', 'include', f), join(self.lfs.toolsym, 'include'))
+
+        #try:
+        self.lfs.compilePackage(self.name, self.version, self.fmt,
+            self.s, self.arc, self.is_separate_builddir,
+            lambda d: buildHelper(d))
+        #except:
+        #    # TODO
+        #    print(format_exc())
+class CompileGlibc(Compile):
     def __init__(self, lfs):
-        super().__init__('gmp', '6.1.2', 'tar.xz', lfs)
-class CompileMPC(Compile):
+        super().__init__('glibc', '2.29', 'tar.xz', lfs, True)
+        self.configure = lambda d: [
+            '--prefix=%s' % self.lfs.toolsym,
+            '--host=%s' % self.lfs.lfs_tgt,
+            '--build=%s' % check_output([join(self.s, 'scripts/config.guess')], cwd=d)[:-1].decode(),
+            '--enable-kernel=3.2',
+            '--with-headers=%s' % join(self.lfs.toolsym, 'include')
+        ]
+    def postinstall(self, d):
+        print(os.environ['PATH'])
+        with open(join(d, 'dummy.c'), 'w') as f:
+            f.write('int main(){}')
+        check_call(['%s-gcc' % self.lfs.lfs_tgt, 'dummy.c'], cwd=d)
+        o = check_output(['readelf', '-l', 'a.out'], cwd=d)
+        if not ': /tools' in o: raise Exception()
+        unlink(join(d, 'dummy.c'))
+        unlink(join(d, 'a.out'))
+class CompileLibstdcpp(Compile):
+    def __init__ (self, lfs):
+        super().__init__('gcc', '9.1.0', 'tar.xz', lfs, True)
+        self.configure = lambda d: [
+            '--host=%s' % self.lfs.lfs_tgt,
+            '--prefix=%s' % self.lfs.toolsym,
+            '--disable-multilib',
+            '--disable-nls',
+            '--disable-libstdcxx-threads',
+            '--disable-libstdcxx-pch',
+            '--with-gxx-include-dir=%s/include/c++/%s' % (join(self.lfs.toolsym, self.lfs.lfs_tgt), self.version)
+        ]
+    def preconf(self, d):
+        print("preconf")
+        mpfr = CompileMPFR(self.lfs)
+        mpc  = CompileMPC(self.lfs)
+        gmp  = CompileGMP(self.lfs)
+        # TODO parallel
+        with topen(mpfr.arc, 'r') as tar: tar.extractall(self.s)
+        move(join(self.s, mpfr.pkgd), join(self.s, 'mpfr'))
+        with topen(mpc.arc,  'r') as tar: tar.extractall(self.s)
+        move(join(self.s, mpc.pkgd),  join(self.s, 'mpc'))
+        with topen(gmp.arc,  'r') as tar: tar.extractall(self.s)
+        move(join(self.s, gmp.pkgd),  join(self.s, 'gmp'))
+class CompileBinutils2(Compile):
     def __init__(self, lfs):
-        super().__init__('mpc', '1.1.0', 'tar.gz', lfs)
+        print("init compile binutils 2")
+        super().__init__('binutils', '2.32', 'tar.xz', lfs, True)
+        self.configure = lambda d: [
+            '--prefix=%s' % lfs.toolsym,
+            '--with-sysroot=%s' % lfs.lfs,
+            '--with-lib-path=%s' % join(lfs.toolsym, 'lib'),
+            '--target=%s' % lfs.lfs_tgt, '--disable-nls', '--disable-werror']
+        print("leaving constructor")
+    def compilePackage(self):
+        print("my compile package")
+        #try:
+        def buildHelper(self, s, d, preconf, configure, preinstall, postinstall):
+            print("build helper")
+            preconf(d)
+            myEnv = dict(os.environ, CC='%s-gcc' % self.lfs.lfs_tgt, AR='5s-ar' % self.lfs.lfs_tgt)
+            check_call([join(s, 'configure')] + configure(d), cwd=d, env=myEnv)
+            check_call(['make'], cwd=d)
+            preinstall(d)
+            check_call(['make', 'install'], cwd=d)
+            postinstall(d)
+        self.lfs.compilePackage(self.name, self.version, self.fmt,
+            self.s, self.arc, self.is_separate_builddir,
+            lambda d: buildHelper(self.s, d,
+                self.preconf,
+                self.configure,
+                self.preinstall,
+                self.postinstall))
+        #except:
+        #    # TODO
+        #    print(format_exc())

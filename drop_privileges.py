@@ -47,9 +47,12 @@ def dropChildPrivileges(child, uid_name='nobody', gid_name='nogroup'):
         try:
             drop_privileges(uid_name=uid_name, gid_name=gid_name)
             child()
-        finally: _exit(0)
+        #finally: _exit(0)
+        except: _exit(2)
+        _exit(0)
     #waitpid(pid, 0)
-    _eintr_retry_call(waitpid, pid, 0)
+    cid, es = _eintr_retry_call(waitpid, pid, 0)
+    if es: raise Exception()
 
 """ https://stackoverflow.com/questions/25928190/python-run-command-as-normal-user-in-a-root-script """
 def drop_eprivileges(uid_name='nobody', gid_name='nogroup'):

@@ -43,12 +43,12 @@ from lfs_util import makeflagFormula
 class Tools(LFSAbs):
     def createImagePath(self):
         d = self.pathdir
-        if not isdir(d): mkdir(d)
-        createRamdisk(d)
+        if not self.is_persistent or not isdir(d): mkdir(d)
+        if not self.is_persistent: createRamdisk(d)
     def removeImagePath(self):
         d = self.pathdir
-        Tools.removeRamdisk(d)
-        rmdir(d)
+        if not self.is_persistent: removeRamdisk(d)
+        if not self.is_persistent: rmdir(d)
     def createSrcx(self):
             mkdir(self.srcx)
             createRamdisk(self.srcx)
@@ -79,40 +79,52 @@ class Tools(LFSAbs):
         self.group   = 'lfs'
         self.user    = 'lfs'
         self.lfs_tgt = '%s-lfs-linux-gnu' % uname()[4]
+
+        self.is_persistent = True
+
+        self.cleanup_funcs = [self.rmSources, self.removeSrcx, self.removeLFSUser, self.removeToolsDirectory, self.unmountPartitions, self.removeDisk]
     def cleanupAndBuildDistro(self):
        self.forceCleanup()
        self.buildDistro()
     def forceCleanup(self):
         print("force cleanup")
-        try:    self.removeSrcx()
-        except: pass
-        try:    self.removeLFSUser()
-        except: pass
-        try:    self.removeToolsDirectory()
-        except: pass
-        try:    self.forceUnmountPartitions()
-        except: pass
-        try:    self.removeDisk()
-        except: pass
+        for f in self.cleanup_funcs:
+            try:    f()
+            except: pass
+        #try:    self.removeSrcx()
+        #except: pass
+        #try:    self.removeLFSUser()
+        #except: pass
+        #try:    self.removeToolsDirectory()
+        #except: pass
+        #try:    self.forceUnmountPartitions()
+        #except: pass
+        ##try:    self.removeDisk()
+        ##except: pass
     def cleanup(self):
         print("cleanup")
-        self.removeSrcx()
-        self.removeLFSUser()
-        self.removeToolsDirectory()
-        self.unmountPartitions()
-        self.removeDisk()
+        for f in self.cleanup_funcs: f()
+        #self.rmSources()
+        #self.removeSrcx()
+        #self.removeLFSUser()
+        ## TODO
+        #self.removeToolsDirectory()
+        #self.unmountPartitions()
+        ##self.removeDisk()
     def cpSources(self):
         print("copy sources")
-        copytree(self.sources, self.cpsrc)
+        if not self.is_persistent or not isdir(self.cpsrc): copytree(self.sources, self.cpsrc)
+    def rmSources(self): rmtree(self.cpsrc)
     def buildDistro(self):
         print("build distro")
         """ II 2 """
         """ https://www.simplifiedpython.net/python-threading-example/ """
         def prepareHostSystem():
             print("prepare host system")
-            self.createDisk()
-            self.partitionDisk()
-            self.createFileSystems()
+            if not self.is_persistent or not exists(self.path):
+                self.createDisk()
+                self.partitionDisk()
+                self.createFileSystems()
             self.mountPartitions()
         diskThread   = Thread(target=prepareHostSystem)
         sourceThread = Thread(target=self.downloadSources)
@@ -127,6 +139,7 @@ class Tools(LFSAbs):
 
         diskThread  .join()
         srcxThread  .start()
+        # TODO wtf does this hang?
         toolsThread .start()
         sourceThread.join()
         # TODO start source copy thread
@@ -188,6 +201,7 @@ class Tools(LFSAbs):
 
     def createDisk(self):
         print("create disk")
+        #if exists(self.pathdir): return
         self.createImagePath()
 
         """ https://stackoverflow.com/questions/12654772/create-empty-file-using-python """
@@ -197,7 +211,7 @@ class Tools(LFSAbs):
         with open(self.path, 'wb') as f: _eintr_retry_call(lambda F: F.truncate(self.sz), f)
     def removeDisk(self):
         print("remove disk")
-        _eintr_retry_call(remove, self.path)
+        #_eintr_retry_call(remove, self.path)
         self.removeImagePath()
 
     """ II 2.4 """
@@ -225,22 +239,23 @@ class Tools(LFSAbs):
     """ https://stackoverflow.com/questions/20406422/mounting-a-partition-inside-a-dd-image-with-python """
     def mountPartitions(self):
         print("mount partitions")
-        _eintr_retry_call(mkdir, self.lfs)
+        if not self.is_persistent or not isdir(self.lfs):
+            _eintr_retry_call(mkdir, self.lfs)
         check_call(['losetup', self.lo, self.path], stdin=DEVNULL, stdout=DEVNULL)
         check_call(['mount', '-t', self.fstype, self.lo, self.lfs], stdin=DEVNULL, stdout=DEVNULL)
     def unmountPartitions(self):
         print("unmount partitions")
         check_call(['umount', self.lfs], stdin=DEVNULL, stdout=DEVNULL)
         check_call(['losetup', '-d', self.lo], stdin=DEVNULL, stdout=DEVNULL)
-        _eintr_retry_call(rmdir, self.lfs)
+        #_eintr_retry_call(rmdir, self.lfs)
     def forceUnmountPartitions(self):
         print("force unmount partitions")
         try:    check_call(['umount', self.lfs], stdin=DEVNULL, stdout=DEVNULL)
         except: pass
         try:    check_call(['losetup', '-d', self.lo], stdin=DEVNULL, stdout=DEVNULL)
         except: pass
-        try:    _eintr_retry_call(rmdir, self.lfs)
-        except: pass
+        #try:    _eintr_retry_call(rmdir, self.lfs)
+        #except: pass
 
     """ II 4.2 """
     
@@ -255,15 +270,18 @@ class Tools(LFSAbs):
         #t1.join()
         #t2.join()
         def mktools():
-            mkdir(self.tools)
-            createRamdisk(self.tools)
+            if not self.is_persistent or not isdir(self.tools):
+                mkdir(self.tools)
+            if not self.is_persistent:
+                createRamdisk(self.tools)
 
         #parallelize([
         #    (_eintr_retry_call, [mktools]),
         #    (_eintr_retry_call, [symlink, self.tools, self.toolsym])
         #])
+        # TODO parallel
         mktools()
-        symlink(self.tools, self.toolsym)
+        if not self.is_persistent or not exists(self.toolsym): symlink(self.tools, self.toolsym)
     def removeToolsDirectory(self):
         print("remove tools directory")
         #rmtree(self.tools)
@@ -275,8 +293,10 @@ class Tools(LFSAbs):
         #t1.join()
         #t2.join()
         def rmtools():
-            removeRamdisk(self.tools)
-            rmdir(self.tools)
+            if not self.is_persistent:
+                removeRamdisk(self.tools)
+            if not self.is_persistent:
+                rmdir(self.tools)
         parallelize([
             #(_eintr_retry_call, [rmtree, self.tools]),
             (_eintr_retry_call, [rmtools]),
